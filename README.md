@@ -69,11 +69,24 @@ cp .env.example .env.local
 
 Edit `.env.local`:
 ```
+# Stream Chat
 NEXT_PUBLIC_STREAM_API_KEY=your_api_key
 NEXT_PUBLIC_STREAM_USER_TOKEN=your_user_token
+STREAM_API_SECRET=your_api_secret
+
+# Zendesk (for support escalation)
+ZENDESK_SUBDOMAIN=your-subdomain
+ZENDESK_EMAIL=admin@example.com
+ZENDESK_API_TOKEN=your_zendesk_api_token
 ```
 
-Get credentials from [dashboard.getstream.io](https://dashboard.getstream.io)
+Get Stream credentials from [dashboard.getstream.io](https://dashboard.getstream.io)
+
+Get Zendesk credentials:
+1. Go to Zendesk Admin → Apps and integrations → APIs → Zendesk API
+2. Enable Token Access
+3. Generate a new API token
+4. Copy your subdomain from your Zendesk URL (e.g., `company.zendesk.com` → `company`)
 
 ### 3. Run Development Server
 

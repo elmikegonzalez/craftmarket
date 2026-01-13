@@ -8,9 +8,13 @@
     "start": "next start",
     "lint": "eslint",
     "setup-users": "node scripts/setup-users.js",
-    "generate-token": "node scripts/generate-token.js"
+    "generate-token": "node scripts/generate-token.js",
+    "clean-demo": "node scripts/clean-demo.js",
+    "full-cleanup": "node scripts/full-cleanup.js",
+    "seed-scenario": "node scripts/seed-scenario.js"
   },
   "dependencies": {
+    "dotenv": "^17.2.3",
     "next": "16.1.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",

@@ -19,6 +19,12 @@ const users = [
     name: 'María (Seller)',
     image: 'https://getstream.io/random_png/?name=Maria',
   },
+  {
+    id: 'agent-support',
+    name: 'Craft Market Support',
+    role: 'admin',
+    image: 'https://getstream.io/random_png/?name=Support',
+  },
 ];
 
 async function setupUsers() {

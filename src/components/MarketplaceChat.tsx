@@ -170,6 +170,50 @@ const CustomMessage = () => {
 // =============================================================================
 const EscalateButton = ({ channel }: { channel: StreamChannel }) => {
   const [isEscalating, setIsEscalating] = useState(false);
+  const [hasEscalated, setHasEscalated] = useState(false);
+
+  // Check if agent is already in the channel or if escalation has happened
+  useEffect(() => {
+    if (!channel) return;
+
+    // Check if agent-support is a member
+    const agentMember = channel.state.members['agent-support'];
+    const hasAgent = !!agentMember;
+
+    // Check if there's already a support ticket message
+    const hasTicketMessage = channel.state.messages.some(
+      (msg) =>
+        msg.text?.includes('Support ticket #') ||
+        msg.text?.includes('🎫 Support ticket')
+    );
+
+    setHasEscalated(hasAgent || hasTicketMessage);
+
+    // Listen for new members (when agent joins)
+    const handleMemberAdded = (event: any) => {
+      if (event.user?.id === 'agent-support') {
+        setHasEscalated(true);
+      }
+    };
+
+    // Listen for new messages (when ticket confirmation is sent)
+    const handleNewMessage = (event: any) => {
+      if (
+        event.message?.text?.includes('Support ticket #') ||
+        event.message?.text?.includes('🎫 Support ticket')
+      ) {
+        setHasEscalated(true);
+      }
+    };
+
+    channel.on('member.added', handleMemberAdded);
+    channel.on('message.new', handleNewMessage);
+
+    return () => {
+      channel.off('member.added', handleMemberAdded);
+      channel.off('message.new', handleNewMessage);
+    };
+  }, [channel]);
 
   const handleEscalate = async () => {
     setIsEscalating(true);
@@ -200,6 +244,9 @@ const EscalateButton = ({ channel }: { channel: StreamChannel }) => {
       await channel.sendMessage({
         text: `🎫 Support ticket #${data.ticketId} created. A Craft Market agent will join this conversation shortly.`,
       });
+
+      // Mark as escalated
+      setHasEscalated(true);
     } catch (error) {
       console.error('Escalation failed:', error);
     } finally {
@@ -207,15 +254,26 @@ const EscalateButton = ({ channel }: { channel: StreamChannel }) => {
     }
   };
 
+  const isDisabled = isEscalating || hasEscalated;
+
   return (
     <button
       onClick={handleEscalate}
-      disabled={isEscalating}
+      disabled={isDisabled}
       className="w-full py-3 px-4 bg-gradient-to-r from-red-500 to-orange-500 text-white font-semibold rounded-lg 
                  hover:from-red-600 hover:to-orange-600 transition-all disabled:opacity-50 disabled:cursor-not-allowed
-                 shadow-md hover:shadow-lg"
+                 shadow-md hover:shadow-lg disabled:hover:from-red-500 disabled:hover:to-orange-500"
+      title={
+        hasEscalated
+          ? 'Support has already been contacted for this conversation'
+          : undefined
+      }
     >
-      {isEscalating ? '⏳ Creating ticket...' : '🎫 Escalate to Support'}
+      {isEscalating
+        ? '⏳ Creating ticket...'
+        : hasEscalated
+          ? '✅ Support Contacted'
+          : '🎫 Escalate to Support'}
     </button>
   );
 };
@@ -225,61 +283,120 @@ const EscalateButton = ({ channel }: { channel: StreamChannel }) => {
 // =============================================================================
 export default function MarketplaceChat() {
   const [channel, setChannel] = useState<StreamChannel>();
-  const [currentUser] = useState<User>(users.buyer);
+  const [currentUser, setCurrentUser] = useState<User>(users.buyer);
+  const [agentToken, setAgentToken] = useState<string | null>(null);
+  const [isLoadingAgent, setIsLoadingAgent] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  // Check if we're joining as an agent and fetch token
+  useEffect(() => {
+    const urlParams = new URLSearchParams(window.location.search);
+    const userParam = urlParams.get('user');
+    
+    if (userParam === 'agent-support') {
+      // Fetch agent token from API
+      fetch('/api/auth/agent-token')
+        .then((res) => res.json())
+        .then((data) => {
+          if (data.token) {
+            setAgentToken(data.token);
+            setCurrentUser({
+              id: 'agent-support',
+              name: 'Craft Market Support',
+              image: 'https://getstream.io/random_png/?name=Support',
+            });
+          }
+        })
+        .catch((error) => {
+          console.error('Failed to get agent token:', error);
+        })
+        .finally(() => {
+          setIsLoadingAgent(false);
+        });
+    } else {
+      // Not an agent, use buyer token immediately
+      setIsLoadingAgent(false);
+    }
+  }, []);
+
+  // Determine which token to use
+  const urlParams = typeof window !== 'undefined' ? new URLSearchParams(window.location.search) : null;
+  const isAgent = urlParams?.get('user') === 'agent-support';
+  
+  // Only create client when we have the right token (wait for agent token if agent)
+  const activeToken = isAgent ? agentToken : userToken;
+  const tokenReady = !isAgent || (isAgent && agentToken !== null);
 
   const client = useCreateChatClient({
     apiKey,
-    tokenOrProvider: userToken,
+    tokenOrProvider: tokenReady ? (activeToken || userToken) : userToken, // Use buyer token as fallback
     userData: currentUser,
+    options: {
+      enableInsights: true,
+      enableWSFallback: true,
+    },
   });
 
   useEffect(() => {
-    if (!client) return;
+    // Don't setup channel if we're waiting for agent token or refreshing
+    if (!client || (isAgent && !agentToken) || isRefreshing) return;
 
     const setupChannel = async () => {
-      const marketplaceChannel = client.channel('messaging', `listing-${productListing.id}`, {
+      // Check if we're joining a specific channel from URL (for agents)
+      const urlParams = new URLSearchParams(window.location.search);
+      const channelParam = urlParams.get('channel');
+
+      let channelId = channelParam || `listing-${productListing.id}`;
+
+      const marketplaceChannel = client.channel('messaging', channelId, {
         name: productListing.title,
         image: productListing.image,
-        members: [users.buyer.id, users.seller.id],
+        members: [users.buyer.id, users.seller.id, 'agent-support'],
         listing_id: productListing.id,
         listing_price: productListing.price,
       });
 
       await marketplaceChannel.watch();
 
-        // Send initial message if new channel
-        if (marketplaceChannel.state.messages.length === 0) {
-          await marketplaceChannel.sendMessage({
-            text: 'Hello! Thanks for your interest. Here are the product details:',
-            user_id: users.seller.id,
-          attachments: [
-            {
-              type: 'product',
-              title: productListing.title,
-              price: productListing.price,
-              originalPrice: productListing.originalPrice,
-              image: productListing.image,
-              description: productListing.description,
-            } as Record<string, unknown>,
-          ],
-        });
-      }
+      // Don't send initial message - channel should be empty
+      // Maria will respond after Carlos asks something
 
       setChannel(marketplaceChannel);
+
+      // Listen for channel deletion/disconnection
+      const handleChannelDeleted = () => {
+        setChannel(undefined);
+      };
+
+      marketplaceChannel.on('channel.deleted', handleChannelDeleted);
+
+      return () => {
+        marketplaceChannel.off('channel.deleted', handleChannelDeleted);
+      };
     };
 
     setupChannel();
-  }, [client]);
+  }, [client, isAgent, agentToken, isRefreshing]);
 
-  if (!client) {
+  if (!client || isLoadingAgent || isRefreshing) {
     return (
       <div className="flex items-center justify-center h-full bg-gradient-to-br from-yellow-400 to-yellow-500">
         <div className="text-center text-white">
-          <div className="text-4xl mb-4">🛒</div>
+          <div className="text-4xl mb-4">{isRefreshing ? '🔄' : '🛒'}</div>
           <h2 className="text-xl font-bold mb-2">Craft Market Chat Demo</h2>
-          <p className="text-yellow-100">Conectando...</p>
+          <p className="text-yellow-100">
+            {isRefreshing 
+              ? 'Refreshing...' 
+              : isLoadingAgent 
+                ? 'Loading agent session...' 
+                : 'Connecting...'}
+          </p>
           <p className="text-yellow-200 text-sm mt-4 max-w-xs">
-            Agrega tu API Key de Stream en las variables de entorno
+            {isRefreshing
+              ? 'Please wait while the demo environment is updated...'
+              : isLoadingAgent
+                ? 'Setting up support agent view...'
+                : 'Add your Stream API Key in environment variables'}
           </p>
         </div>
       </div>
@@ -338,7 +455,7 @@ export default function MarketplaceChat() {
             <p className="text-amber-700 text-xs mb-3">
               If you have any problems with this transaction, our support team can help you.
             </p>
-            {channel && <EscalateButton channel={channel} />}
+            {channel && channel.state && !channel.disconnected && !isRefreshing && <EscalateButton channel={channel} />}
           </div>
           <p className="text-xs text-gray-400 text-center">
             Protected Purchase by Craft Market
@@ -349,14 +466,24 @@ export default function MarketplaceChat() {
       {/* Chat Area */}
       <main className="flex-1 flex flex-col">
         <Chat client={client}>
-          <Channel channel={channel} Attachment={ProductAttachment} Message={CustomMessage}>
-            <Window>
-              <ChannelHeader />
-              <MessageList />
-              <MessageInput />
-            </Window>
-            <Thread />
-          </Channel>
+          {channel && channel.state && !channel.disconnected && !client.disconnected ? (
+            <Channel channel={channel} Attachment={ProductAttachment} Message={CustomMessage}>
+              <Window>
+                <ChannelHeader />
+                <MessageList />
+                <MessageInput />
+              </Window>
+              <Thread />
+            </Channel>
+          ) : (
+            <div className="flex items-center justify-center h-full">
+              <div className="text-center text-gray-500">
+                <div className="text-2xl mb-2">🔄</div>
+                <p>Channel is being reset...</p>
+                <p className="text-sm mt-2">Refreshing page...</p>
+              </div>
+            </div>
+          )}
         </Chat>
       </main>
     </div>
